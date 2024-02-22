@@ -288,6 +288,11 @@ vim.keymap.set("n", "<C-n>", "<cmd> NvimTreeToggle <CR>")
 
 -- bufferline
 vim.keymap.set("n", "<leader>x", "<cmd>bdelete <CR>")
+vim.keymap.set("n", "<tab>", "<cmd>bnext <CR>")
+vim.keymap.set("n", "<S-tab>", "<cmd>bprev <CR>")
+
+-- terminal
+vim.keymap.set({ "n", "t" }, "<M-return>", "<cmd>ToggleTerm <CR>")
 
 
 -- [[ Setting options ]]
@@ -634,6 +639,9 @@ mason_lspconfig.setup_handlers {
       filetypes = (servers[server_name] or {}).filetypes,
     }
   end,
+  ["astro"] = function ()
+    require('lspconfig').astro.setup{}
+  end
 }
 
 -- [[ Configure nvim-cmp ]]
@@ -682,9 +690,9 @@ cmp.setup {
     end, { 'i', 's' }),
   },
   sources = {
-    { name = 'nvim_lsp' },
-    { name = 'luasnip' },
-    { name = 'path' },
+    { name = 'nvim_lsp', max_item_count = 10 },
+    { name = 'luasnip', max_item_count = 10},
+    { name = 'path', max_item_count = 10},
   },
 }
 
