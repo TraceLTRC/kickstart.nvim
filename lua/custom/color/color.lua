@@ -28,7 +28,7 @@ return {
     hl('IncSearch', colors.base01, colors.base05)
     hl('Visual', colors.base05, colors.base02)
 
-    -- Specific for mini.tabline
+    -- Specifics
     hl('BufferCurrent', colors.base05, colors.base00, { bold = true })
     hl('BufferVisible', colors.base05, colors.base00, { bold = false })
     hl('BufferInactive', colors.base05, colors.base01, { bold = false })
@@ -36,5 +36,7 @@ return {
     hl('BufferVisibleMod', colors.base0B, colors.base00, { bold = false })
     hl('BufferInactiveMod', colors.base0B, colors.base01, { bold = false })
     hl('BufferTabpageFill', 'NONE', colors.base01, { bold = false })
+    hl('TreesitterContext', colors.base05, colors.base00)
+    hl('TreesitterContextLineNumber', colors.base0C, colors.base00)
   end,
 }
