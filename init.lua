@@ -4,6 +4,12 @@
 vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
 
+-- Auto session recommends:
+vim.o.sessionoptions = 'blank,buffers,curdir,folds,help,tabpages,winsize,winpos,terminal,localoptions'
+
+-- window settings
+vim.o.winborder = 'rounded'
+
 -- For nvim-tree
 vim.g.loaded_netrw = 1
 vim.g.loaded_netrwPlugin = 1
@@ -27,22 +33,6 @@ vim.o.showmode = false
 vim.o.foldmethod = 'expr'
 vim.o.foldexpr = 'nvim_treesitter#foldexpr()'
 vim.o.foldlevel = 20
-
--- vim.api.nvim_create_autocmd({ 'BufReadPost', 'FileReadPost' }, {
---   desc = 'Open all folds on load file',
---   group = vim.api.nvim_create_augroup('strch-open-fold', { clear = true }),
---   callback = function()
---     vim.cmd.normal 'zR'
---   end,
--- })
-
--- Sync clipboard between OS and Neovim.
---  Schedule the setting after `UiEnter` because it can increase startup-time.
---  Remove this option if you want your OS clipboard to remain independent.
---  See `:help 'clipboard'`
-vim.schedule(function()
-  vim.o.clipboard = 'unnamedplus'
-end)
 
 -- Enable break indent
 vim.o.breakindent = true
@@ -91,51 +81,39 @@ vim.o.confirm = true
 -- Clear highlights on search when pressing <Esc> in normal mode
 vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 
--- Diagnostic keymaps
-vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
-
 -- Dirtree
 vim.keymap.set('n', '<leader>lt', '<cmd>NvimTreeToggle<CR>')
 
 -- Buffer
 vim.keymap.set('n', '<A-h>', '<cmd>BufferPrevious<CR>')
 vim.keymap.set('n', '<A-l>', '<cmd>BufferNext<CR>')
-vim.keymap.set('n', '<A-w>', '<cmd>BufferClose<CR>')
+vim.keymap.set('n', '<A-w>', function()
+  if string.find(vim.bo.buftype, 'terminal') then
+    vim.cmd 'hide'
+  else
+    vim.cmd 'BufferClose'
+  end
+end)
 vim.keymap.set('n', '<A-,>', '<cmd>BufferMovePrevious<CR>')
 vim.keymap.set('n', '<A-.>', '<cmd>BufferMoveNext<CR>')
 
 -- Quickfix
-vim.keymap.set('n', '<leader>co', '<cmd>cope<CR>')
-vim.keymap.set('n', '<leader>cl', '<cmd>cclo<CR>')
+vim.keymap.set('n', '<leader>qd', vim.diagnostic.setloclist, { desc = 'Open [Q]uickFix [D]iagnostics' })
+vim.keymap.set('n', '<leader>qo', '<cmd>cope<CR>', { desc = '[Q]uickFix [O]pen' })
+vim.keymap.set('n', '<leader>ql', '<cmd>cclo<CR>', { desc = '[Q]uickFix [C]lose' })
 
--- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
--- for people to discover. Otherwise, you normally need to press <C-\><C-n>, which
--- is not what someone will guess without a bit more experience.
---
--- NOTE: This won't work in all terminal emulators/tmux/etc. Try your own mapping
--- or just use <C-\><C-n> to exit terminal mode
-vim.keymap.set('t', '<Esc><Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' })
+-- Gitsigns
+vim.keymap.set('n', '<leader>gb', '<cmd>Gitsigns blame<CR>', { desc = '[G]it [B]lame' })
 
--- TIP: Disable arrow keys in normal mode
--- vim.keymap.set('n', '<left>', '<cmd>echo "Use h to move!!"<CR>')
--- vim.keymap.set('n', '<right>', '<cmd>echo "Use l to move!!"<CR>')
--- vim.keymap.set('n', '<up>', '<cmd>echo "Use k to move!!"<CR>')
--- vim.keymap.set('n', '<down>', '<cmd>echo "Use j to move!!"<CR>')
+-- Terminal
+vim.keymap.set('n', '<leader>tt', '<cmd>ToggleTerm<CR>', { desc = '[T]oggle [T]erminal' })
+vim.keymap.set('t', '<A-w>', '<cmd>hide<CR>', { desc = 'Hide terminal' })
+vim.keymap.set('t', '<Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' })
 
--- Keybinds to make split navigation easier.
---  Use CTRL+<hjkl> to switch between windows
---
---  See `:help wincmd` for a list of all window commands
 vim.keymap.set('n', '<C-h>', '<C-w><C-h>', { desc = 'Move focus to the left window' })
 vim.keymap.set('n', '<C-l>', '<C-w><C-l>', { desc = 'Move focus to the right window' })
 vim.keymap.set('n', '<C-j>', '<C-w><C-j>', { desc = 'Move focus to the lower window' })
 vim.keymap.set('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus to the upper window' })
-
--- NOTE: Some terminals have colliding keymaps or are not able to send distinct keycodes
--- vim.keymap.set("n", "<C-S-h>", "<C-w>H", { desc = "Move window to the left" })
--- vim.keymap.set("n", "<C-S-l>", "<C-w>L", { desc = "Move window to the right" })
--- vim.keymap.set("n", "<C-S-j>", "<C-w>J", { desc = "Move window to the lower" })
--- vim.keymap.set("n", "<C-S-k>", "<C-w>K", { desc = "Move window to the upper" })
 
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
@@ -269,6 +247,16 @@ require('lazy').setup({
       {
         'nvim-tree/nvim-tree.lua',
         opts = {
+          on_attach = function(bufnr)
+            local api = require 'nvim-tree.api'
+
+            local function opts(desc)
+              return { desc = 'nvim-tree: ' .. desc, buffer = bufnr, noremap = true, silent = true, nowait = true }
+            end
+
+            api.config.mappings.default_on_attach(bufnr)
+            vim.keymap.set('n', 'd', api.fs.trash, opts 'Trash')
+          end,
           actions = {
             open_file = {
               quit_on_open = true,
@@ -400,7 +388,7 @@ require('lazy').setup({
 
           -- Execute a code action, usually your cursor needs to be on top of an error
           -- or a suggestion from your LSP for this to activate.
-          map('gra', vim.lsp.buf.code_action, '[G]oto Code [A]ction', { 'n', 'x' })
+          map('gca', vim.lsp.buf.code_action, '[G]oto [C]ode [A]ction', { 'n', 'x' })
 
           -- Find references for the word under your cursor.
           map('grf', require('telescope.builtin').lsp_references, '[G]oto [R]eferences')
@@ -775,17 +763,6 @@ require('lazy').setup({
     opts = {},
   },
   {
-    'RRethy/base16-nvim',
-    config = function()
-      local ok, colors = pcall(require, 'custom.color.color')
-      if ok then
-        require('base16-colorscheme').setup(colors.colors)
-
-        colors.setup()
-      end
-    end,
-  },
-  {
     'romgrk/barbar.nvim',
     dependencies = {
       'lewis6991/gitsigns.nvim', -- OPTIONAL: for git status
@@ -807,43 +784,22 @@ require('lazy').setup({
     'nvim-treesitter/nvim-treesitter-context',
     config = function() end,
   },
-  -- {
-  --   'folke/trouble.nvim',
-  --   opts = {},
-  --   cmd = 'Trouble',
-  --   keys = {
-  --     {
-  --       '<leader>xx',
-  --       '<cmd>Trouble diagnostics toggle<cr>',
-  --       desc = 'Diagnostics (Trouble)',
-  --     },
-  --     {
-  --       '<leader>xX',
-  --       '<cmd>Trouble diagnostics toggle filter.buf=0<cr>',
-  --       desc = 'Buffer Diagnostics (Trouble)',
-  --     },
-  --     {
-  --       '<leader>cs',
-  --       '<cmd>Trouble symbols toggle focus=false<cr>',
-  --       desc = 'Symbols (Trouble)',
-  --     },
-  --     {
-  --       '<leader>cl',
-  --       '<cmd>Trouble lsp toggle focus=false win.position=right<cr>',
-  --       desc = 'LSP Definitions / references / ... (Trouble)',
-  --     },
-  --     {
-  --       '<leader>xL',
-  --       '<cmd>Trouble loclist toggle<cr>',
-  --       desc = 'Location List (Trouble)',
-  --     },
-  --     {
-  --       '<leader>xQ',
-  --       '<cmd>Trouble qflist toggle<cr>',
-  --       desc = 'Quickfix List (Trouble)',
-  --     },
-  --   },
-  -- },
+  {
+    'folke/tokyonight.nvim',
+    lazy = false,
+    priority = 1000,
+    opts = {},
+  },
+  {
+    'rmagatti/auto-session',
+    lazy = false,
+    opts = {},
+  },
+  {
+    'akinsho/toggleterm.nvim',
+    version = '*',
+    config = true,
+  },
 }, {
   ui = {
     -- If you are using a Nerd Font: set icons to an empty table which will use the
@@ -866,5 +822,5 @@ require('lazy').setup({
   },
 })
 
--- The line beneath this is called `modeline`. See `:help modeline`
--- vim: ts=2 sts=2 sw=2 et
+-- Set colorscheme
+vim.cmd [[colorscheme tokyonight-moon]]
