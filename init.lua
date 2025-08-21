@@ -10,6 +10,9 @@ vim.o.sessionoptions = 'blank,buffers,curdir,folds,help,tabpages,winsize,winpos,
 -- window settings
 vim.o.winborder = 'rounded'
 
+-- word wrap
+vim.o.wrap = false;
+
 -- For nvim-tree
 vim.g.loaded_netrw = 1
 vim.g.loaded_netrwPlugin = 1
@@ -256,6 +259,10 @@ require('lazy').setup({
 
             api.config.mappings.default_on_attach(bufnr)
             vim.keymap.set('n', 'd', api.fs.trash, opts 'Trash')
+
+            vim.keymap.set('n', 'bd', api.marks.bulk.delete, opts 'Delete Bookmarked')
+            vim.keymap.set('n', 'bt', api.marks.bulk.trash, opts 'Trash Bookmarked')
+            vim.keymap.set('n', 'bmv', api.marks.bulk.move, opts 'Move Bookmarked')
           end,
           actions = {
             open_file = {
@@ -751,7 +758,7 @@ require('lazy').setup({
     },
   },
   {
-    'norcalli/nvim-colorizer.lua',
+    'catgoose/nvim-colorizer.lua',
     event = 'BufReadPost',
     opts = {
       '*',
