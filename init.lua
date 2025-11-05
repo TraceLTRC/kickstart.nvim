@@ -11,7 +11,7 @@ vim.o.sessionoptions = 'blank,buffers,curdir,folds,help,tabpages,winsize,winpos,
 vim.o.winborder = 'rounded'
 
 -- word wrap
-vim.o.wrap = false;
+vim.o.wrap = false
 
 -- For nvim-tree
 vim.g.loaded_netrw = 1
@@ -25,9 +25,6 @@ vim.g.have_nerd_font = true
 
 vim.o.relativenumber = true
 vim.o.number = true
-
--- Enable mouse mode, can be useful for resizing splits for example!
-vim.o.mouse = 'a'
 
 -- Don't show the mode, since it's already in the status line
 vim.o.showmode = false
@@ -81,6 +78,13 @@ vim.o.scrolloff = 10
 -- raise a dialog asking if you wish to save the current file(s) if buffer is modified
 vim.o.confirm = true
 
+-- Hover information
+vim.keymap.set('n', 'K', function()
+  vim.lsp.buf.hover {
+    close_events = { 'CursorMoved', 'BufLeave', 'WinLeave' },
+  }
+end, { desc = 'Hover information' })
+
 -- Clear highlights on search when pressing <Esc> in normal mode
 vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 
@@ -117,6 +121,11 @@ vim.keymap.set('n', '<C-h>', '<C-w><C-h>', { desc = 'Move focus to the left wind
 vim.keymap.set('n', '<C-l>', '<C-w><C-l>', { desc = 'Move focus to the right window' })
 vim.keymap.set('n', '<C-j>', '<C-w><C-j>', { desc = 'Move focus to the lower window' })
 vim.keymap.set('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus to the upper window' })
+
+-- Word wraps
+vim.keymap.set('n', '<leader>ww', function ()
+  vim.o.wrap = not vim.o.wrap;
+end, { desc = 'Toggle word wrap' })
 
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
@@ -395,7 +404,7 @@ require('lazy').setup({
 
           -- Execute a code action, usually your cursor needs to be on top of an error
           -- or a suggestion from your LSP for this to activate.
-          map('gca', vim.lsp.buf.code_action, '[G]oto [C]ode [A]ction', { 'n', 'x' })
+          map('ga', vim.lsp.buf.code_action, '[G]oto [C]ode [A]ction', { 'n', 'x' })
 
           -- Find references for the word under your cursor.
           map('grf', require('telescope.builtin').lsp_references, '[G]oto [R]eferences')
@@ -590,24 +599,25 @@ require('lazy').setup({
       },
     },
     opts = {
-      notify_on_error = false,
-      -- format_on_save = function(bufnr)
-      --   -- Disable "format_on_save lsp_fallback" for languages that don't
-      --   -- have a well standardized coding style. You can add additional
-      --   -- languages here or re-enable it for the disabled ones.
-      --   local disable_filetypes = { c = true, cpp = true }
-      --   if disable_filetypes[vim.bo[bufnr].filetype] then
-      --     return nil
-      --   else
-      --     return {
-      --       timeout_ms = 500,
-      --       lsp_format = 'fallback',
-      --     }
-      --   end
-      -- end,
+      notify_on_error = true,
+      format_on_save = function(bufnr)
+        -- Disable "format_on_save lsp_fallback" for languages that don't
+        -- have a well standardized coding style. You can add additional
+        -- languages here or re-enable it for the disabled ones.
+        local enable_filetypes = { go = true }
+        if not enable_filetypes[vim.bo[bufnr].filetype] then
+          return nil
+        else
+          return {
+            timeout_ms = 500,
+            lsp_format = 'fallback',
+          }
+        end
+      end,
       formatters_by_ft = {
         lua = { 'stylua' },
-        go = { 'goimports' },
+        go = { 'gofmt', 'goimports' },
+        ts = { 'prettier' },
         -- Conform can also run multiple formatters sequentially
         -- python = { "isort", "black" },
         --
@@ -806,6 +816,20 @@ require('lazy').setup({
     'akinsho/toggleterm.nvim',
     version = '*',
     config = true,
+  },
+  {
+    "mistweaverco/kulala.nvim",
+    keys = {
+      { "<leader>Rs", desc = "Send request" },
+      { "<leader>Ra", desc = "Send all requests" },
+      { "<leader>Rb", desc = "Open scratchpad" },
+    },
+    ft = { "http", "rest" },
+    opts = {
+      global_keymaps = true,
+      global_keymaps_prefix = "<leader>R",
+      kulala_keymaps_prefix = "",
+    },
   },
 }, {
   ui = {
