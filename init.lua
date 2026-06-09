@@ -12,6 +12,35 @@ vim.o.winborder = 'rounded'
 
 -- word wrap
 vim.o.wrap = false
+vim.keymap.set("n", "j", "gj")
+vim.keymap.set("n", "k", "gk")
+
+-- Issue with svelte not having syntax highlights
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "svelte",
+  callback = function()
+    vim.treesitter.start()
+  end,
+})
+
+-- yanks
+vim.keymap.set("n", "<leader>yp", function()
+  local path = vim.fn.expand("%:.")
+  vim.fn.setreg("+", path)
+  vim.notify("Yanked: " .. path)
+end, { desc = "Yank relative file path" })
+
+vim.keymap.set("n", "<leader>yl", function()
+  local path = vim.fn.expand("%:.") .. ":" .. vim.fn.line(".")
+  vim.fn.setreg("+", path)
+  vim.notify("Yanked: " .. path)
+end, { desc = "Yank relative file path with line number" })
+
+vim.keymap.set("n", "<leader>yf", function()
+  local name = vim.fn.expand("%:t")
+  vim.fn.setreg("+", name)
+  vim.notify("Yanked: " .. name)
+end, { desc = "Yank file name" })
 
 -- For nvim-tree
 vim.g.loaded_netrw = 1
@@ -23,7 +52,7 @@ vim.opt.termguicolors = true
 -- Set to true if you have a Nerd Font installed and selected in the terminal
 vim.g.have_nerd_font = true
 
-vim.o.relativenumber = true
+-- vim.o.relativenumber = false
 vim.o.number = true
 
 -- Don't show the mode, since it's already in the status line
@@ -31,7 +60,7 @@ vim.o.showmode = false
 
 -- Folding
 vim.o.foldmethod = 'expr'
-vim.o.foldexpr = 'nvim_treesitter#foldexpr()'
+vim.o.foldexpr = 'v:lua.vim.treesitter.foldexpr()'
 vim.o.foldlevel = 20
 
 -- Enable break indent
@@ -325,10 +354,8 @@ require('lazy').setup({
       local builtin = require 'telescope.builtin'
       vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
       vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })
-      vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = '[S]earch [F]iles' })
       vim.keymap.set('n', '<leader>ss', builtin.builtin, { desc = '[S]earch [S]elect Telescope' })
       vim.keymap.set('n', '<leader>sw', builtin.grep_string, { desc = '[S]earch current [W]ord' })
-      vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = '[S]earch by [G]rep' })
       vim.keymap.set('n', '<leader>sd', builtin.diagnostics, { desc = '[S]earch [D]iagnostics' })
       vim.keymap.set('n', '<leader>sr', builtin.resume, { desc = '[S]earch [R]esume' })
       vim.keymap.set('n', '<leader>s.', builtin.oldfiles, { desc = '[S]earch Recent Files ("." for repeat)' })
@@ -529,57 +556,60 @@ require('lazy').setup({
       --  - capabilities (table): Override fields in capabilities. Can be used to disable certain LSP features.
       --  - settings (table): Override the default settings passed when initializing the server.
       --        For example, to see the options for `lua_ls`, you could go to: https://luals.github.io/wiki/settings/
+      -- Per-server custom configuration. mason-lspconfig v2 uses automatic_enable
+      -- (not handlers), so we call vim.lsp.config directly for overrides.
       local servers = {
         clangd = {},
+        rust_analyzer = {
+          settings = {
+            ['rust-analyzer'] = {
+              checkOnSave = true,
+              check = { command = 'clippy' },
+              imports = {
+                granularity = { group = 'module' },
+                prefix = 'self',
+              },
+              cargo = { buildScripts = { enable = true } },
+              procMacro = { enable = true },
+            },
+          },
+        },
+        ruby_lsp = {
+          -- Smart wrapper: connects to the vidio Solargraph Docker container
+          -- when running, falls back to local ruby-lsp for other projects.
+          cmd = { vim.fn.expand '~/.local/bin/ruby-lsp-smart' },
+          init_options = {
+            formatter = 'none',
+            linters = {},
+          },
+        },
         lua_ls = {
-          -- cmd = { ... },
-          -- filetypes = { ... },
-          -- capabilities = {},
           settings = {
             Lua = {
               completion = {
                 callSnippet = 'Replace',
               },
-              -- You can toggle below to ignore Lua_LS's noisy `missing-fields` warnings
-              -- diagnostics = { disable = { 'missing-fields' } },
             },
           },
         },
       }
 
-      -- Ensure the servers and tools above are installed
-      --
-      -- To check the current status of installed tools and/or manually install
-      -- other tools, you can run
-      --    :Mason
-      --
-      -- You can press `g?` for help in this menu.
-      --
-      -- `mason` had to be setup earlier: to configure its options see the
-      -- `dependencies` table for `nvim-lspconfig` above.
-      --
-      -- You can add other tools here that you want Mason to install
-      -- for you, so that they are available from within Neovim.
+      -- Apply custom configs directly (handlers are ignored in mason-lspconfig v2)
+      for server_name, config in pairs(servers) do
+        config.capabilities = vim.tbl_deep_extend('force', {}, capabilities, config.capabilities or {})
+        vim.lsp.config(server_name, config)
+      end
+
       local ensure_installed = vim.tbl_keys(servers or {})
       vim.list_extend(ensure_installed, {
-        'stylua', -- Used to format Lua code
+        'stylua',
       })
       require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
+      -- mason-lspconfig v2: automatic_enable calls vim.lsp.enable() for installed servers
       require('mason-lspconfig').setup {
-        ensure_installed = {}, -- explicitly set to an empty table (Kickstart populates installs via mason-tool-installer)
+        ensure_installed = {},
         automatic_installation = false,
-        handlers = {
-          function(server_name)
-            local server = servers[server_name] or {}
-            -- This handles overriding only values explicitly passed
-            -- by the server configuration above. Useful when disabling
-            -- certain features of an LSP (for example, turning off formatting for ts_ls)
-            server.capabilities = vim.tbl_deep_extend('force', {}, capabilities, server.capabilities or {})
-            vim.lsp.config(server_name, server)
-            vim.lsp.enable(server_name)
-          end,
-        },
       }
     end,
   },
@@ -604,7 +634,7 @@ require('lazy').setup({
         -- Disable "format_on_save lsp_fallback" for languages that don't
         -- have a well standardized coding style. You can add additional
         -- languages here or re-enable it for the disabled ones.
-        local enable_filetypes = { go = true }
+        local enable_filetypes = { go = true, rust = true }
         if not enable_filetypes[vim.bo[bufnr].filetype] then
           return nil
         else
@@ -617,6 +647,7 @@ require('lazy').setup({
       formatters_by_ft = {
         lua = { 'stylua' },
         go = { 'gofmt', 'goimports' },
+        rust = { 'rustfmt' },
         ts = { 'prettier' },
         -- Conform can also run multiple formatters sequentially
         -- python = { "isort", "black" },
@@ -751,10 +782,11 @@ require('lazy').setup({
   { -- Highlight, edit, and navigate code
     'nvim-treesitter/nvim-treesitter',
     build = ':TSUpdate',
-    main = 'nvim-treesitter.configs', -- Sets main module to use for opts
+    main = 'nvim-treesitter', -- Sets main module to use for opts
+    lazy = false,
     -- [[ Configure Treesitter ]] See `:help nvim-treesitter`
     opts = {
-      ensure_installed = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' },
+      ensure_installed = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc', 'ruby', 'svelte', 'typescript' },
       -- Autoinstall languages that are not installed
       auto_install = true,
       highlight = {
@@ -831,6 +863,31 @@ require('lazy').setup({
       kulala_keymaps_prefix = "",
     },
   },
+  {
+    'dmtrKovalenko/fff.nvim',
+    build = function()
+      require("fff.download").download_or_build_binary()
+    end,
+    opts = {
+      debug = {
+        enabled = true,
+        show_scores = true,
+      },
+    },
+    lazy = false, -- the plugin lazy-initialises itself
+    keys = {
+      { "sf", function() require('fff').find_files() end, desc = 'FFFind files' },
+      { "sg", function() require('fff').live_grep() end, desc = 'LiFFFe grep' },
+      { "sz",
+        function() require('fff').live_grep({ grep = { modes = { 'fuzzy', 'plain' } } }) end,
+        desc = 'Live fffuzy grep',
+      },
+      { "sc",
+        function() require('fff').live_grep({ query = vim.fn.expand("<cword>") }) end,
+        desc = 'Search current word',
+      },
+    },
+  }
 }, {
   ui = {
     -- If you are using a Nerd Font: set icons to an empty table which will use the
