@@ -577,7 +577,7 @@ require('lazy').setup({
         ruby_lsp = {
           -- Smart wrapper: connects to the vidio Solargraph Docker container
           -- when running, falls back to local ruby-lsp for other projects.
-          cmd = { vim.fn.expand '~/.local/bin/ruby-lsp-smart' },
+          cmd = { vim.fs.joinpath(vim.fn.stdpath 'config', 'bin', 'ruby-lsp-smart') },
           init_options = {
             formatter = 'none',
             linters = {},

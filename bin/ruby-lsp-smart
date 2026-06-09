@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Smart Ruby LSP wrapper.
+#
+# vidio: its gems (pg, grpc, google-cloud-*, nokogiri, git-sourced gems, ...) only
+#   exist inside the Docker dev image, so a locally-run ruby-lsp can't materialize
+#   the bundle and fails to index gem constants. Instead we run ruby-lsp *inside*
+#   a Docker container built from the same dev image, over stdio (`docker exec -i`).
+#
+#   This uses a dedicated standalone container (`docker run`, NOT docker compose),
+#   so it never touches vidio's docker-compose.yml and nothing can be accidentally
+#   committed/pushed. The container is a personal, throwaway helper: it just mounts
+#   the project at the host path and sleeps; we exec ruby-lsp into it on demand.
+#
+#   The project is mounted at the SAME path as on the host ($HP:$HP) so the file
+#   URIs ruby-lsp returns (definition / references) resolve on the host filesystem.
+#
+#   Fast/offline start: once a valid .ruby-lsp/Gemfile.lock exists we set
+#   BUNDLE_GEMFILE and run `bundle exec ruby-lsp`, bypassing ruby-lsp's
+#   composed-bundle launcher (~2-3s instead of a network bundle install per launch).
+#
+# Everything else: fall back to the local Mason ruby-lsp.
+set -uo pipefail
+
+HP="/home/kbahmid/Projects/vidio"          # host path == container path (URI parity)
+NAME="vidio-ruby-lsp"                        # our personal helper container
+IMG_FALLBACK="asia-southeast1-docker.pkg.dev/tools-build/vidio/vidio-web-dev:latest"
+LSP_GEMFILE="$HP/.ruby-lsp/Gemfile"
+LOCAL_RUBY_LSP="$HOME/.local/share/nvim/mason/bin/ruby-lsp"
+
+log() { echo "ruby-lsp-smart: $*" >&2; }
+run_local() { exec "$LOCAL_RUBY_LSP" --use-launcher "$@"; }
+
+# Only dockerize when invoked from within the vidio project.
+case "$PWD" in
+  "$HP"*) : ;;
+  *) run_local "$@" ;;
+esac
+command -v docker >/dev/null 2>&1 || run_local "$@"
+
+is_running() { [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; }
+exists()     { docker inspect "$NAME" >/dev/null 2>&1; }
+
+# 1. Ensure our helper container is running.
+if ! is_running; then
+  if ! docker info >/dev/null 2>&1; then
+    log "docker not available; using local ruby-lsp"; run_local "$@"
+  fi
+  if exists; then
+    log "starting helper container $NAME..."
+    docker start "$NAME" >/dev/null 2>&1 || true
+  else
+    # Resolve the dev image from compose (read-only; does not modify it), with a
+    # hardcoded fallback. Only happens when creating the container.
+    IMG="$( (cd "$HP" && docker compose config --images 2>/dev/null | grep -m1 web-dev) )"
+    [ -n "$IMG" ] || IMG="$IMG_FALLBACK"
+    if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+      log "dev image '$IMG' not found locally; using local ruby-lsp"; run_local "$@"
+    fi
+    log "creating helper container $NAME from $IMG..."
+    docker run -d --name "$NAME" --entrypoint sleep \
+      -v "$HP:$HP" -w "$HP" "$IMG" infinity >/dev/null 2>&1 || true
+  fi
+  for _ in $(seq 1 30); do is_running && break; sleep 1; done
+fi
+is_running || { log "could not start helper container; using local ruby-lsp"; run_local "$@"; }
+
+# Pre-launch execs omit `-i`, so they never touch the LSP stdin we forward later.
+dexec()  { docker exec "$NAME" "$@"; }            # as app user (uid 1000)
+drexec() { docker exec -u root "$NAME" "$@"; }    # as root
+
+# 2. Fast path: if the composed bundle is already valid, launch immediately.
+#    Otherwise run one-time setup (install ruby-lsp + build the offline lock).
+if ! dexec env BUNDLE_GEMFILE="$LSP_GEMFILE" bundle check >/dev/null 2>&1; then
+  log "setting up ruby-lsp composed bundle in container (one-time)..."
+  drexec bash -c '
+    set -e
+    git config --system --add safe.directory "*"
+    gem list -i ruby-lsp >/dev/null 2>&1 || \
+      gem install --no-document ruby-lsp ruby-lsp-rails debug
+    cd "'"$HP"'"
+    mkdir -p .ruby-lsp
+    printf "%s\n" "ruby-lsp/" > .ruby-lsp/.gitignore
+    # Composed gemfile: the application bundle plus ruby-lsp (same content the
+    # ruby-lsp launcher would generate).
+    cat > .ruby-lsp/Gemfile <<"GEMFILE"
+eval_gemfile(File.expand_path("../Gemfile", __dir__))
+gem "ruby-lsp", ">= 0.18.0", require: false, group: :development
+gem "debug", require: false, group: :development, platforms: :mri
+gem "ruby-lsp-rails", require: false, group: :development
+GEMFILE
+    # Seed from the project lock so git-sourced gem revisions stay pinned and
+    # bundler does not re-fetch root-owned git checkouts.
+    cp -f Gemfile.lock .ruby-lsp/Gemfile.lock
+    # Resolve offline: every gem (app deps + ruby-lsp + its deps) is already in
+    # the image, so --local avoids the slow/flaky contribsys + rubygems fetches.
+    BUNDLE_GEMFILE=.ruby-lsp/Gemfile bundle lock --local
+    chown -R 1000:1000 .ruby-lsp
+  ' >&2 || { log "in-container setup failed; using local ruby-lsp"; run_local "$@"; }
+fi
+
+# 3. Hand stdio to ruby-lsp inside the container. BUNDLE_GEMFILE set => the
+#    composed-bundle launcher is skipped. -i keeps stdin open (no -t: a TTY would
+#    corrupt the JSON-RPC stream). -w sets cwd to the host path so returned file
+#    URIs match the host filesystem.
+exec docker exec -i -w "$HP" -e BUNDLE_GEMFILE="$LSP_GEMFILE" "$NAME" bundle exec ruby-lsp
