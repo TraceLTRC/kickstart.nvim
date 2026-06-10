@@ -120,6 +120,21 @@ vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 -- Dirtree
 vim.keymap.set('n', '<leader>lt', '<cmd>NvimTreeToggle<CR>')
 
+-- Rename current file
+vim.keymap.set("n", "<leader>lr", function()
+  local old_path = vim.api.nvim_buf_get_name(0)
+  local old_name = vim.fn.fnamemodify(old_path, ":t")
+  local new_name = vim.fn.input("Rename to: ", old_name)
+
+  if new_name == "" or new_name == old_name then return end
+
+  local new_path = vim.fn.fnamemodify(old_path, ":h") .. "/" .. new_name
+
+  vim.fn.rename(old_path, new_path)
+  vim.cmd("edit " .. vim.fn.fnameescape(new_path))
+  vim.cmd("bdelete! " .. vim.fn.bufnr(old_path))
+end, { desc = "Rename current file" })
+
 -- Buffer
 vim.keymap.set('n', '<A-h>', '<cmd>BufferPrevious<CR>')
 vim.keymap.set('n', '<A-l>', '<cmd>BufferNext<CR>')
@@ -574,15 +589,11 @@ require('lazy').setup({
             },
           },
         },
-        ruby_lsp = {
-          -- Smart wrapper: connects to the vidio Solargraph Docker container
-          -- when running, falls back to local ruby-lsp for other projects.
-          cmd = { vim.fs.joinpath(vim.fn.stdpath 'config', 'bin', 'ruby-lsp-smart') },
-          init_options = {
-            formatter = 'none',
-            linters = {},
-          },
-        },
+        -- ruby_lsp is NOT auto-enabled here (see automatic_enable exclude below).
+        -- It is driven per-component by the Ruby autocmd at the end of this
+        -- config so each project in a monorepo gets its own Dockerized client.
+        -- Listing it keeps Mason installing the local binary as a fallback.
+        ruby_lsp = {},
         lua_ls = {
           settings = {
             Lua = {
@@ -606,11 +617,64 @@ require('lazy').setup({
       })
       require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
-      -- mason-lspconfig v2: automatic_enable calls vim.lsp.enable() for installed servers
+      -- mason-lspconfig v2: automatic_enable calls vim.lsp.enable() for installed
+      -- servers. Exclude ruby_lsp: it is started per-component by the autocmd
+      -- below so each project in a monorepo gets its own (Dockerized) client.
       require('mason-lspconfig').setup {
         ensure_installed = {},
         automatic_installation = false,
+        automatic_enable = { exclude = { 'ruby_lsp' } },
       }
+
+      -- [[ Dockerized, multi-project Ruby LSPs ]]
+      -- ETS (and vidio) are monorepos where each component is its own Bundler
+      -- project whose gems live only inside that component's Docker image. We
+      -- therefore start one ruby-lsp + one sorbet client PER component, each
+      -- running inside that component's container (via bin/docker-lsp). Sorbet
+      -- is what powers go-to-definition on the types inside `sig { ... }`.
+      local docker_lsp = vim.fs.joinpath(vim.fn.stdpath 'config', 'bin', 'docker-lsp')
+      -- Nearest ancestor of `fname` that contains the relative marker `rel`.
+      local function nearest(fname, rel)
+        for dir in vim.fs.parents(fname) do
+          if vim.uv.fs_stat(dir .. '/' .. rel) then
+            return dir
+          end
+        end
+      end
+      vim.api.nvim_create_autocmd('FileType', {
+        pattern = 'ruby',
+        desc = 'Start per-component Dockerized ruby-lsp + sorbet',
+        callback = function(args)
+          local fname = vim.api.nvim_buf_get_name(args.buf)
+          if fname == '' or vim.bo[args.buf].buftype ~= '' then
+            return
+          end
+          -- root_dir per component = nearest Gemfile (fall back to repo .git).
+          local gem_root = nearest(fname, 'Gemfile') or nearest(fname, '.git')
+          if not gem_root then
+            return
+          end
+          -- General Ruby features (completion, references, symbols, ...).
+          vim.lsp.start({
+            name = 'ruby_lsp',
+            cmd = { docker_lsp, 'ruby-lsp', gem_root },
+            root_dir = gem_root,
+            capabilities = capabilities,
+            init_options = { formatter = 'none', linters = {} },
+          }, { bufnr = args.buf })
+          -- Sorbet: type-aware navigation incl. `sig` params. Only where the
+          -- component actually has a Sorbet project (sorbet/config).
+          local srb_root = nearest(fname, 'sorbet/config')
+          if srb_root then
+            vim.lsp.start({
+              name = 'sorbet',
+              cmd = { docker_lsp, 'sorbet', srb_root },
+              root_dir = srb_root,
+              capabilities = capabilities,
+            }, { bufnr = args.buf })
+          end
+        end,
+      })
     end,
   },
 
@@ -887,6 +951,10 @@ require('lazy').setup({
         desc = 'Search current word',
       },
     },
+  },
+  {
+    'sindrets/diffview.nvim',
+    config = function() end 
   }
 }, {
   ui = {

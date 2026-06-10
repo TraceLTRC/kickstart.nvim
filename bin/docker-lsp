@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Generalized Dockerized Ruby LSP launcher for multi-project monorepos.
+#
+# Usage: docker-lsp <ruby-lsp|sorbet> <component-root>
+#   <component-root> is the absolute path to the component being served (the dir
+#   that holds the Gemfile / sorbet/config). Neovim spawns LSP commands with cwd
+#   set to the editor's working dir, NOT the client root_dir, so the caller must
+#   pass the root explicitly — we never rely on $PWD.
+#
+# Why Docker: for these projects (ETS, vidio, ...) the gems (nokogiri, grpc,
+# google-protobuf, pg, sorbet-static, git-sourced gems, ...) only exist inside
+# the per-component Docker dev image — a host `bundle` dies with GemNotFound. So
+# each LSP runs *inside* that component's image, over stdio (`docker exec -i`).
+#
+# Container model: a dedicated, throwaway sleeper container per (repo, service),
+# created with `docker run` (NOT compose) so it never touches the project's
+# docker-compose stack. The whole repo is mounted at its SAME host path
+# ($REPO:$REPO) so file URIs the servers return resolve on the host filesystem
+# AND cross-component go-to-definition (e.g. into a shared lib) works. The image
+# is resolved read-only from the compose file; nothing is written back to it.
+#
+# vidio keeps its existing bespoke wrapper (ruby-lsp-smart) — we delegate to it.
+set -uo pipefail
+
+MODE="${1:-}"
+ROOT="${2:-}"
+LOCAL_RUBY_LSP="$HOME/.local/share/nvim/mason/bin/ruby-lsp"
+VIDIO_WRAPPER="$(dirname "$0")/ruby-lsp-smart"
+
+log() { echo "docker-lsp[$MODE]: $*" >&2; }
+die_local() {
+  # Last-resort fallback. ruby-lsp can try the local Mason binary (works for
+  # plain, non-dockerized ruby projects). sorbet has no local equivalent here.
+  case "$MODE" in
+    ruby-lsp)
+      log "falling back to local ruby-lsp"
+      cd "$ROOT" 2>/dev/null || true
+      exec "$LOCAL_RUBY_LSP" --use-launcher
+      ;;
+    *)
+      log "no local fallback for $MODE; exiting"
+      exit 0
+      ;;
+  esac
+}
+
+[ -n "$MODE" ] && [ -n "$ROOT" ] || { echo "usage: docker-lsp <ruby-lsp|sorbet> <component-root>" >&2; exit 2; }
+ROOT="$(cd "$ROOT" 2>/dev/null && pwd -P)" || die_local
+
+# Find the repo root: nearest ancestor with a docker-compose file, else the git
+# toplevel, else the component itself.
+find_repo() {
+  local d="$ROOT"
+  while [ "$d" != "/" ]; do
+    if [ -f "$d/docker-compose.yml" ] || [ -f "$d/docker-compose.yaml" ]; then
+      echo "$d"; return
+    fi
+    d="$(dirname "$d")"
+  done
+  git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || echo "$ROOT"
+}
+REPO="$(find_repo)"
+
+# vidio: hand off to its existing, project-specific wrapper unchanged.
+if [ "$REPO" = "$HOME/Projects/vidio" ] && [ "$MODE" = "ruby-lsp" ] && [ -x "$VIDIO_WRAPPER" ]; then
+  cd "$ROOT" 2>/dev/null || true
+  exec "$VIDIO_WRAPPER"
+fi
+
+command -v docker >/dev/null 2>&1 || die_local
+docker info >/dev/null 2>&1 || { log "docker daemon not available"; die_local; }
+
+# Resolve the compose service + image for this component (read-only).
+COMPOSE_JSON="$( (cd "$REPO" && docker compose config --format json 2>/dev/null) )"
+[ -n "$COMPOSE_JSON" ] || { log "no compose config under $REPO"; die_local; }
+
+SVC="$(basename "$ROOT")"
+if [ "$(jq -r --arg s "$SVC" '.services | has($s)' <<<"$COMPOSE_JSON")" != "true" ]; then
+  # Fall back to matching a service whose build context is this component dir.
+  SVC="$(jq -r --arg r "$ROOT" '.services | to_entries[] | select((.value.build.context // "") == $r) | .key' <<<"$COMPOSE_JSON" | head -1)"
+fi
+[ -n "$SVC" ] && [ "$SVC" != "null" ] || { log "no compose service for $ROOT"; die_local; }
+
+IMG="$(jq -r --arg s "$SVC" '.services[$s].image // empty' <<<"$COMPOSE_JSON")"
+[ -n "$IMG" ] || { log "no image for service $SVC"; die_local; }
+docker image inspect "$IMG" >/dev/null 2>&1 || { log "image '$IMG' not present locally"; die_local; }
+
+NAME="lsp-$(basename "$REPO")-$SVC"
+
+is_running() { [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; }
+exists()     { docker inspect "$NAME" >/dev/null 2>&1; }
+
+# Ensure the dedicated sleeper container is up.
+if ! is_running; then
+  if exists; then
+    log "starting helper container $NAME..."
+    docker start "$NAME" >/dev/null 2>&1 || true
+  else
+    log "creating helper container $NAME from $IMG..."
+    docker run -d --name "$NAME" --entrypoint sleep \
+      -v "$REPO:$REPO" -w "$ROOT" "$IMG" infinity >/dev/null 2>&1 || true
+  fi
+  for _ in $(seq 1 30); do is_running && break; sleep 1; done
+fi
+is_running || { log "could not start helper container $NAME"; die_local; }
+
+# Pre-launch execs omit `-i` so they never touch the LSP stdin we forward later.
+dexec()  { docker exec -w "$ROOT" "$NAME" "$@"; }
+drexec() { docker exec -u root -w "$ROOT" "$NAME" "$@"; }
+
+# Mounted repo is owned by host uid; mark it safe so git-based tooling is quiet.
+drexec git config --system --add safe.directory '*' >/dev/null 2>&1 || true
+
+case "$MODE" in
+  sorbet)
+    # Sorbet ships in the app bundle (sorbet-static/runtime), so it runs straight
+    # away. --disable-watchman: watchman isn't in the image; the editor sends
+    # didChange/didSave so file watching isn't needed for LSP.
+    exec docker exec -i -w "$ROOT" "$NAME" bundle exec srb tc --lsp --disable-watchman
+    ;;
+
+  ruby-lsp)
+    LSP_GEMFILE="$ROOT/.ruby-lsp/Gemfile"
+    # One-time: install ruby-lsp into the image bundle and build a composed
+    # Gemfile that layers ruby-lsp on top of the app bundle, then lock offline.
+    if ! dexec env BUNDLE_GEMFILE="$LSP_GEMFILE" bundle check >/dev/null 2>&1; then
+      log "setting up ruby-lsp composed bundle in $NAME (one-time)..."
+      drexec bash -c '
+        set -e
+        cd "'"$ROOT"'"
+        gem list -i ruby-lsp >/dev/null 2>&1 || gem install --no-document ruby-lsp debug
+        mkdir -p .ruby-lsp
+        printf "%s\n" "ruby-lsp/" > .ruby-lsp/.gitignore
+        cat > .ruby-lsp/Gemfile <<"GEMFILE"
+eval_gemfile(File.expand_path("../Gemfile", __dir__))
+gem "ruby-lsp", require: false, group: :development
+gem "debug", require: false, group: :development, platforms: :mri
+GEMFILE
+        cp -f Gemfile.lock .ruby-lsp/Gemfile.lock 2>/dev/null || true
+        BUNDLE_GEMFILE=.ruby-lsp/Gemfile bundle lock --local 2>/dev/null \
+          || BUNDLE_GEMFILE=.ruby-lsp/Gemfile bundle lock
+        chown -R 1000:1000 .ruby-lsp 2>/dev/null || true
+      ' >&2 || { log "in-container ruby-lsp setup failed"; die_local; }
+    fi
+    exec docker exec -i -w "$ROOT" -e BUNDLE_GEMFILE="$LSP_GEMFILE" "$NAME" bundle exec ruby-lsp
+    ;;
+
+  *)
+    echo "docker-lsp: unknown mode '$MODE' (want ruby-lsp|sorbet)" >&2
+    exit 2
+    ;;
+esac
