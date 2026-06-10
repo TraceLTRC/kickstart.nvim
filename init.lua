@@ -626,6 +626,22 @@ require('lazy').setup({
         automatic_enable = { exclude = { 'ruby_lsp' } },
       }
 
+      -- Sorbet returns a remote https:// URL (its payload RBI on GitHub) for any
+      -- symbol it has no local definition for -- e.g. a namespace from another
+      -- component that has no generated RBI. Neovim's jump-to-location then tries
+      -- to open that URL as a file and crashes ("Invalid cursor line"). Guard the
+      -- single chokepoint so such results are reported, not opened. Covers
+      -- telescope's LSP pickers and the default handlers alike.
+      local orig_show_document = vim.lsp.util.show_document
+      vim.lsp.util.show_document = function(location, offset_encoding, opts)
+        local uri = location and (location.uri or location.targetUri)
+        if uri and not (opts and opts.external) and not uri:match '^file://' then
+          vim.notify('No local definition (server pointed outside the workspace: ' .. uri .. ')', vim.log.levels.WARN)
+          return false
+        end
+        return orig_show_document(location, offset_encoding, opts)
+      end
+
       -- [[ Dockerized, multi-project Ruby LSPs ]]
       -- ETS (and vidio) are monorepos where each component is its own Bundler
       -- project whose gems live only inside that component's Docker image. We
